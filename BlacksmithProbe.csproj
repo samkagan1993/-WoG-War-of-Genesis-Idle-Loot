@@ -1,0 +1,40 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net6.0</TargetFramework>
+    <AssemblyName>BlacksmithProbe</AssemblyName>
+    <LangVersion>latest</LangVersion>
+    <Nullable>disable</Nullable>
+    <GameDir>D:\Games\Steam\steamapps\common\War of Genesis Idle Loot</GameDir>
+    <InteropDir>$(GameDir)\BepInEx\interop</InteropDir>
+  </PropertyGroup>
+
+  <PropertyGroup>
+    <RestoreAdditionalProjectSources>
+      https://api.nuget.org/v3/index.json;
+      https://nuget.bepinex.dev/v3/index.json
+    </RestoreAdditionalProjectSources>
+    <NoWarn>$(NoWarn);NU1603</NoWarn>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="BepInEx.Unity.IL2CPP" Version="6.0.0-be.*" IncludeAssets="compile" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InteropDll Include="$(InteropDir)\*.dll" />
+    <Reference Include="@(InteropDll)" Private="false" />
+  </ItemGroup>
+
+  <Target Name="CheckInterop" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="!Exists('$(GameDir)\GameAssembly.dll')"
+           Text="Invalid GameDir: '$(GameDir)\GameAssembly.dll' not found. Set &lt;GameDir&gt; in BlacksmithProbe.csproj." />
+    <Error Condition="'@(InteropDll)' == ''"
+           Text="Interop folder is missing or empty: '$(InteropDir)'. Install BepInEx 6 IL2CPP and launch the game once until the main menu." />
+  </Target>
+
+  <Target Name="CopyToPlugins" AfterTargets="Build">
+    <Copy SourceFiles="$(TargetPath)" DestinationFolder="$(GameDir)\BepInEx\plugins" />
+  </Target>
+
+</Project>

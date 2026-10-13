@@ -1,0 +1,286 @@
+/* 전역 객체 결정 (Node.js/브라우저 등 환경 차이 대응) */
+var global = global || globalThis || (function () { return this; }());
+
+/**
+ * TextEncoderPolyfill (UTF-8 전용)
+ */
+class TextEncoderPolyfill {
+    constructor() {
+        // 추가 옵션이 필요하다면 생성자에 정의하세요.
+    }
+
+    /**
+     * 주어진 문자열 전체를 UTF-8로 변환하여 Uint8Array로 반환합니다.
+     */
+    encode(input) {
+        if (typeof input !== "string") {
+            throw new TypeError("TextEncoder.encode: input must be a string.");
+        }
+
+        const utf8 = [];
+        let i = 0;
+        while (i < input.length) {
+            let codePoint = input.charCodeAt(i);
+
+            // High Surrogate + Low Surrogate (U+10000 이상) 처리
+            if (codePoint >= 0xD800 && codePoint <= 0xDBFF && i + 1 < input.length) {
+                const next = input.charCodeAt(i + 1);
+                if (next >= 0xDC00 && next <= 0xDFFF) {
+                    codePoint = (codePoint - 0xD800) * 0x400 +
+                                (next - 0xDC00) + 0x10000;
+                    i += 2;
+                } else {
+                    i++;
+                }
+            } else {
+                i++;
+            }
+
+            // 코드 포인트를 UTF-8 바이트 시퀀스로 변환
+            if (codePoint < 0x80) {
+                // 1바이트
+                utf8.push(codePoint);
+            } else if (codePoint < 0x800) {
+                // 2바이트
+                utf8.push(
+                    0xC0 | (codePoint >> 6),
+                    0x80 | (codePoint & 0x3F)
+                );
+            } else if (codePoint < 0x10000) {
+                // 3바이트
+                utf8.push(
+                    0xE0 | (codePoint >> 12),
+                    0x80 | ((codePoint >> 6) & 0x3F),
+                    0x80 | (codePoint & 0x3F)
+                );
+            } else {
+                // 4바이트 (U+10000 ~ U+10FFFF)
+                utf8.push(
+                    0xF0 | (codePoint >> 18),
+                    0x80 | ((codePoint >> 12) & 0x3F),
+                    0x80 | ((codePoint >> 6) & 0x3F),
+                    0x80 | (codePoint & 0x3F)
+                );
+            }
+        }
+
+        return new Uint8Array(utf8);
+    }
+
+    /**
+     * 부분 버퍼(dest)에 문자열을 UTF-8로 인코딩해 쓰고,
+     * { read, written }을 반환합니다.
+     * - read: 소비된 UTF-16 코드 유닛 수
+     * - written: 실제로 dest에 쓴 바이트 수
+     * - 부분 문자가 잘리지 않도록, 버퍼에 남은 공간이 부족하면 중단합니다.
+     */
+    encodeInto(input, dest) {
+        if (typeof input !== "string") {
+            throw new TypeError("TextEncoder.encodeInto: input must be a string.");
+        }
+        if (!(dest instanceof Uint8Array)) {
+            throw new TypeError("TextEncoder.encodeInto: dest must be a Uint8Array.");
+        }
+
+        let read = 0;      // 소비된 UTF-16 코드 유닛 수
+        let written = 0;   // 실제로 쓴 바이트 수
+        let i = 0;
+
+        while (i < input.length) {
+            let codePoint = input.charCodeAt(i);
+            let consume = 1; // 기본은 코드 유닛 1개
+
+            // Surrogate pair 확인
+            if (codePoint >= 0xD800 && codePoint <= 0xDBFF && i + 1 < input.length) {
+                const next = input.charCodeAt(i + 1);
+                if (next >= 0xDC00 && next <= 0xDFFF) {
+                    codePoint = (codePoint - 0xD800) * 0x400 +
+                                (next - 0xDC00) + 0x10000;
+                    consume = 2;
+                }
+            }
+
+            // 이 codePoint를 UTF-8로 인코딩했을 때 필요한 바이트 수
+            let neededBytes;
+            if (codePoint < 0x80) {
+                neededBytes = 1;
+            } else if (codePoint < 0x800) {
+                neededBytes = 2;
+            } else if (codePoint < 0x10000) {
+                neededBytes = 3;
+            } else {
+                neededBytes = 4;
+            }
+
+            // 버퍼에 남은 공간 확인
+            if (written + neededBytes > dest.length) {
+                break; // 더 이상 쓸 수 없으므로 중단
+            }
+
+            // 실제로 쓰기
+            switch (neededBytes) {
+                case 1:
+                    dest[written++] = codePoint;
+                    break;
+                case 2:
+                    dest[written++] = 0xC0 | (codePoint >> 6);
+                    dest[written++] = 0x80 | (codePoint & 0x3F);
+                    break;
+                case 3:
+                    dest[written++] = 0xE0 | (codePoint >> 12);
+                    dest[written++] = 0x80 | ((codePoint >> 6) & 0x3F);
+                    dest[written++] = 0x80 | (codePoint & 0x3F);
+                    break;
+                case 4:
+                    dest[written++] = 0xF0 | (codePoint >> 18);
+                    dest[written++] = 0x80 | ((codePoint >> 12) & 0x3F);
+                    dest[written++] = 0x80 | ((codePoint >> 6) & 0x3F);
+                    dest[written++] = 0x80 | (codePoint & 0x3F);
+                    break;
+            }
+
+            i += consume;
+            read += consume;
+        }
+
+        return { read, written };
+    }
+}
+
+/**
+ * TextDecoderPolyfill (UTF-8 전용)
+ */
+class TextDecoderPolyfill {
+    /**
+     * @param {string} label - 인코딩 레이블, 여기서는 "utf-8"만 지원
+     * @param {object} options - { fatal?: boolean, ignoreBOM?: boolean }
+     */
+    constructor(label = "utf-8", options = {}) {
+        this.label = (label || "utf-8").toLowerCase();
+        if (this.label !== "utf-8") {
+            throw new RangeError("TextDecoderPolyfill only supports utf-8.");
+        }
+
+        this.fatal = !!options.fatal;
+        this.ignoreBOM = !!options.ignoreBOM;
+    }
+
+    /**
+     * 주어진 Uint8Array(UTF-8 바이트)를 디코딩해 문자열로 반환합니다.
+     * - BOM(0xEF,0xBB,0xBF)이 있고 ignoreBOM=false면 BOM 제거
+     * - fatal=true면 잘못된 시퀀스에서 에러 throw, false면 �(U+FFFD)로 대체
+     */
+    decode(buffer) {
+        if (!(buffer instanceof Uint8Array)) {
+            throw new TypeError("TextDecoder.decode: input must be a Uint8Array.");
+        }
+
+        let i = 0;
+
+        // BOM 처리 (EF BB BF)
+        if (!this.ignoreBOM && buffer.length >= 3) {
+            if (buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) {
+                i = 3; // BOM 스킵
+            }
+        }
+
+        let decoded = "";
+
+        while (i < buffer.length) {
+            const byte1 = buffer[i];
+
+            if (byte1 < 0x80) {
+                // 1바이트 (ASCII)
+                decoded += String.fromCharCode(byte1);
+                i++;
+            } else if (byte1 < 0xE0) {
+                // 2바이트
+                if (i + 1 >= buffer.length) {
+                    decoded += this._replaceOrThrow();
+                    break;
+                }
+                const byte2 = buffer[i + 1];
+                if (byte2 < 0x80 || byte2 > 0xBF) {
+                    decoded += this._replaceOrThrow();
+                    i++;
+                    continue;
+                }
+                const codePoint = ((byte1 & 0x1F) << 6) | (byte2 & 0x3F);
+                decoded += String.fromCharCode(codePoint);
+                i += 2;
+            } else if (byte1 < 0xF0) {
+                // 3바이트
+                if (i + 2 >= buffer.length) {
+                    decoded += this._replaceOrThrow();
+                    break;
+                }
+                const byte2 = buffer[i + 1];
+                const byte3 = buffer[i + 2];
+                if (
+                    byte2 < 0x80 || byte2 > 0xBF ||
+                    byte3 < 0x80 || byte3 > 0xBF
+                ) {
+                    decoded += this._replaceOrThrow();
+                    i++;
+                    continue;
+                }
+                const codePoint =
+                    ((byte1 & 0x0F) << 12) |
+                    ((byte2 & 0x3F) << 6) |
+                    (byte3 & 0x3F);
+                decoded += String.fromCharCode(codePoint);
+                i += 3;
+            } else {
+                // 4바이트 (U+10000 이상)
+                if (i + 3 >= buffer.length) {
+                    decoded += this._replaceOrThrow();
+                    break;
+                }
+                const byte2 = buffer[i + 1];
+                const byte3 = buffer[i + 2];
+                const byte4 = buffer[i + 3];
+                if (
+                    byte2 < 0x80 || byte2 > 0xBF ||
+                    byte3 < 0x80 || byte3 > 0xBF ||
+                    byte4 < 0x80 || byte4 > 0xBF
+                ) {
+                    decoded += this._replaceOrThrow();
+                    i++;
+                    continue;
+                }
+                let codePoint =
+                    ((byte1 & 0x07) << 18) |
+                    ((byte2 & 0x3F) << 12) |
+                    ((byte3 & 0x3F) << 6)  |
+                    (byte4 & 0x3F);
+                codePoint -= 0x10000;
+                // UTF-16 서러게이트 쌍
+                const highSurrogate = 0xD800 + (codePoint >> 10);
+                const lowSurrogate = 0xDC00 + (codePoint & 0x3FF);
+                decoded += String.fromCharCode(highSurrogate, lowSurrogate);
+                i += 4;
+            }
+        }
+
+        return decoded;
+    }
+
+    /**
+     * fatal=true면 에러 throw,
+     * fatal=false면 �(U+FFFD) 대체.
+     */
+    _replaceOrThrow() {
+        if (this.fatal) {
+            throw new Error("TextDecoder: invalid UTF-8 sequence");
+        }
+        return "\uFFFD";
+    }
+}
+
+/* 이미 TextEncoder / TextDecoder가 없는 경우에만 폴리필 등록 */
+if (typeof global.TextEncoder === 'undefined') {
+    global.TextEncoder = TextEncoderPolyfill;
+}
+if (typeof global.TextDecoder === 'undefined') {
+    global.TextDecoder = TextDecoderPolyfill;
+}
